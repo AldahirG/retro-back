@@ -1,0 +1,19 @@
+{
+  "name": "retro-back",
+  "private": true,
+  "version": "0.0.1",
+  "packageManager": "pnpm@9.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api":   "pnpm --filter @retro/api dev",
+    "dev:admin": "pnpm --filter admin dev",
+    "dev":       "pnpm run dev:api & pnpm run dev:admin",
+    "build:api": "pnpm --filter @retro/api build",
+    "db:generate": "pnpm --filter @retro/api db:generate",
+    "db:migrate": "pnpm --filter @retro/api db:migrate",
+    "db:studio": "pnpm --filter @retro/api db:studio"
+  }
+}

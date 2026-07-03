@@ -1,0 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: #f5f4ef; color: #0d0d0d; }
+#root { min-height: 100vh; }
