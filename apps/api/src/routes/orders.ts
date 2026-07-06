@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, desc } from 'drizzle-orm'
+import { eq, desc, sql, and } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { db } from '../db/index.ts'
 import {
@@ -52,47 +52,96 @@ function generateOrderNumber() {
 app.post('/', async (c) => {
   const body = createOrderSchema.parse(await c.req.json())
 
-  // Resolver cupón
+  // ── FIX 3: Validar precio real desde DB (ignorar unitPrice del cliente) ──
+  const resolvedItems: Array<typeof body.items[0] & { realPrice: number }> = []
+  for (const item of body.items) {
+    const variant = await db.query.productVariants.findFirst({
+      where: eq(productVariants.id, item.variantId),
+      with: { product: true },
+    })
+    if (!variant) {
+      return c.json({ error: `Variante no encontrada: ${item.variantId}` }, 400)
+    }
+    if (variant.productId !== item.productId) {
+      return c.json({ error: `Variante no pertenece al producto indicado` }, 400)
+    }
+    const realPrice = parseFloat(String(variant.product.price))
+    resolvedItems.push({ ...item, unitPrice: realPrice.toFixed(2), realPrice })
+  }
+
+  // ── FIX 1: Reservar stock atómico — UPDATE con WHERE disponible >= qty ──
+  // Hacerlo ANTES de insertar el pedido para no crear órdenes sin stock.
+  for (const item of resolvedItems) {
+    const updated = await db.update(productVariants)
+      .set({ reservedStock: sql`reserved_stock + ${item.qty}` })
+      .where(and(
+        eq(productVariants.id, item.variantId),
+        sql`stock - reserved_stock >= ${item.qty}`,
+      ))
+      .returning({ id: productVariants.id })
+
+    if (updated.length === 0) {
+      // Revertir reservas ya hechas en este loop
+      for (const prev of resolvedItems) {
+        if (prev.variantId === item.variantId) break
+        await db.update(productVariants)
+          .set({ reservedStock: sql`GREATEST(reserved_stock - ${prev.qty}, 0)` })
+          .where(eq(productVariants.id, prev.variantId))
+      }
+      return c.json({ error: `Sin stock disponible para talla ${item.size}` }, 409)
+    }
+  }
+
+  // ── FIX 2: Cupón — incremento atómico con WHERE used_count < max_uses ──
   let discountRow: typeof discounts.$inferSelect | undefined
   let discountAmount = 0
   if (body.discountCode) {
     discountRow = await db.query.discounts.findFirst({
-      where: eq(discounts.code, body.discountCode),
+      where: eq(discounts.code, body.discountCode.toUpperCase()),
     })
     if (!discountRow || !discountRow.active) {
+      // Liberar stock reservado antes de retornar error
+      for (const item of resolvedItems) {
+        await db.update(productVariants)
+          .set({ reservedStock: sql`GREATEST(reserved_stock - ${item.qty}, 0)` })
+          .where(eq(productVariants.id, item.variantId))
+      }
       return c.json({ error: 'Cupón inválido o expirado' }, 400)
     }
-    if (discountRow.maxUses && discountRow.usedCount >= discountRow.maxUses) {
+
+    // Intento atómico: incrementar usedCount solo si hay usos disponibles
+    const couponUpdated = await db.update(discounts)
+      .set({ usedCount: sql`used_count + 1` })
+      .where(and(
+        eq(discounts.id, discountRow.id),
+        discountRow.maxUses
+          ? sql`used_count < ${discountRow.maxUses}`
+          : sql`true`,
+      ))
+      .returning({ id: discounts.id })
+
+    if (couponUpdated.length === 0) {
+      for (const item of resolvedItems) {
+        await db.update(productVariants)
+          .set({ reservedStock: sql`GREATEST(reserved_stock - ${item.qty}, 0)` })
+          .where(eq(productVariants.id, item.variantId))
+      }
       return c.json({ error: 'Cupón agotado' }, 400)
     }
-  }
 
-  // Calcular subtotal y validar stock
-  let subtotal = 0
-  for (const item of body.items) {
-    const variant = await db.query.productVariants.findFirst({
-      where: eq(productVariants.id, item.variantId),
-    })
-    const available = (variant?.stock ?? 0) - (variant?.reservedStock ?? 0)
-    if (available < item.qty) {
-      return c.json({ error: `Stock insuficiente para talla ${item.size}` }, 409)
-    }
-    subtotal += parseFloat(item.unitPrice) * item.qty
-  }
-
-  // Calcular descuento
-  if (discountRow) {
+    const subtotalPrev = resolvedItems.reduce((s, i) => s + i.realPrice * i.qty, 0)
     if (discountRow.type === 'percent') {
-      discountAmount = subtotal * (parseFloat(discountRow.value) / 100)
+      discountAmount = subtotalPrev * (parseFloat(String(discountRow.value)) / 100)
     } else if (discountRow.type === 'fixed') {
-      discountAmount = parseFloat(discountRow.value)
+      discountAmount = Math.min(parseFloat(String(discountRow.value)), subtotalPrev)
     }
-    // free_shipping se aplica en shippingCost
   }
 
-  const total = subtotal - discountAmount
+  // ── Calcular totales con precios reales ──
+  const subtotal = resolvedItems.reduce((s, i) => s + i.realPrice * i.qty, 0)
+  const total    = Math.max(0, subtotal - discountAmount)
 
-  // Obtener user_id si viene autenticado
+  // ── Obtener user_id si viene autenticado ──
   let userId: string | undefined
   try {
     const { auth } = await import('../lib/auth.ts')
@@ -118,29 +167,22 @@ app.post('/', async (c) => {
     notes:               body.notes,
   }).returning()
 
-  // Items
   await db.insert(orderItems).values(
-    body.items.map(item => ({ orderId: order.id, ...item }))
+    resolvedItems.map(item => ({
+      orderId:     order.id,
+      productId:   item.productId,
+      variantId:   item.variantId,
+      productName: item.productName,
+      size:        item.size,
+      color:       item.color,
+      qty:         item.qty,
+      unitPrice:   item.unitPrice,
+    }))
   )
 
-  // Historial inicial
   await db.insert(orderStatusHistory).values({
     orderId: order.id, status: 'pending', note: 'Pedido creado',
   })
-
-  // Reservar stock
-  for (const item of body.items) {
-    await db.update(productVariants)
-      .set({ reservedStock: db.sql`reserved_stock + ${item.qty}` as any })
-      .where(eq(productVariants.id, item.variantId))
-  }
-
-  // Incrementar uso de cupón
-  if (discountRow) {
-    await db.update(discounts)
-      .set({ usedCount: discountRow.usedCount + 1 })
-      .where(eq(discounts.id, discountRow.id))
-  }
 
   return c.json({ order, orderNumber }, 201)
 })
