@@ -66,8 +66,53 @@ app.route('/api/v1/admin', adminRouter)
 // ── HEALTH ───────────────────────────────────────────────────
 app.get('/health', c => c.json({ ok: true, ts: new Date().toISOString() }))
 
+// ── STOCK CLEANUP — liberar reservas de pedidos abandonados ──
+async function releaseAbandonedStock() {
+  try {
+    const { db }   = await import('./db/index.ts')
+    const { orders, orderItems, orderStatusHistory, productVariants } = await import('./db/schema.ts')
+    const { eq, and, lte, sql } = await import('drizzle-orm')
+
+    // Pedidos 'pending' con más de 2 horas sin actualización = abandonados
+    const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000)
+
+    const stale = await db.query.orders.findMany({
+      where: and(eq(orders.status, 'pending'), lte(orders.createdAt, cutoff)),
+      with: { items: true },
+    })
+
+    if (!stale.length) return
+
+    for (const order of stale) {
+      await db.update(orders)
+        .set({ status: 'cancelled', updatedAt: new Date() })
+        .where(eq(orders.id, order.id))
+
+      await db.insert(orderStatusHistory).values({
+        orderId: order.id,
+        status:  'cancelled',
+        note:    'Cancelado automáticamente — sin confirmar en 2h',
+      })
+
+      for (const item of order.items) {
+        if (item.variantId) {
+          await db.update(productVariants)
+            .set({ reservedStock: sql`GREATEST(reserved_stock - ${item.qty}, 0)` })
+            .where(eq(productVariants.id, item.variantId))
+        }
+      }
+    }
+
+    console.log(`[cleanup] ${stale.length} pedido(s) abandonados cancelados`)
+  } catch (e) {
+    console.error('[cleanup] error:', e)
+  }
+}
+
 // ── START ─────────────────────────────────────────────────────
 const port = parseInt(process.env.PORT ?? '3001')
 serve({ fetch: app.fetch, port }, () => {
   console.log(`🚀 Retro Back corriendo en http://localhost:${port}`)
+  releaseAbandonedStock()
+  setInterval(releaseAbandonedStock, 60 * 60 * 1000)  // cada hora
 })

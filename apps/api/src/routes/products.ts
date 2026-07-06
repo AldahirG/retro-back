@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { eq, and, ilike, desc, asc } from 'drizzle-orm'
+import { eq, and, or, ilike, desc, asc } from 'drizzle-orm'
 import { db } from '../db/index.ts'
 import { products, productImages, productVariants, categories, drops } from '../db/schema.ts'
 import { requireAdmin } from '../middleware/auth.ts'
@@ -26,11 +26,29 @@ app.get('/', async (c) => {
   const { category, drop, search, sort = 'newest', page = '1', limit = '20' } = c.req.query()
   const offset = (parseInt(page) - 1) * parseInt(limit)
 
+  // Resolver categoryId desde slug si viene filtro
+  let categoryId: string | undefined
+  if (category) {
+    const cat = await db.query.categories.findFirst({ where: eq(categories.slug, category) })
+    categoryId = cat?.id
+  }
+
+  let dropId: string | undefined
+  if (drop) {
+    const { drops } = await import('../db/schema.ts')
+    const d = await db.query.drops.findFirst({ where: eq(drops.slug, drop) })
+    dropId = d?.id
+  }
+
   const rows = await db.query.products.findMany({
     where: and(
       eq(products.visible, true),
-      category ? eq(products.categoryId,
-        db.select({ id: categories.id }).from(categories).where(eq(categories.slug, category)).limit(1) as any
+      categoryId ? eq(products.categoryId, categoryId) : undefined,
+      dropId     ? eq(products.dropId, dropId)         : undefined,
+      search     ? or(
+        ilike(products.name,        `%${search}%`),
+        ilike(products.description, `%${search}%`),
+        ilike(products.slug,        `%${search}%`),
       ) : undefined,
     ),
     with: {
@@ -123,14 +141,21 @@ app.post('/:id/variants', requireAdmin, async (c) => {
   return c.json(variant, 201)
 })
 
-// PATCH /products/:id/variants/:variantId/stock
-app.patch('/:id/variants/:variantId/stock', requireAdmin, async (c) => {
-  const { stock } = await c.req.json()
+// PATCH /products/:id/variants/:variantId
+app.patch('/:id/variants/:variantId', requireAdmin, async (c) => {
+  const body = await c.req.json()
   const [variant] = await db.update(productVariants)
-    .set({ stock })
+    .set(body)
     .where(eq(productVariants.id, c.req.param('variantId')))
     .returning()
+  if (!variant) return c.json({ error: 'Not found' }, 404)
   return c.json(variant)
+})
+
+// DELETE /products/:id/variants/:variantId
+app.delete('/:id/variants/:variantId', requireAdmin, async (c) => {
+  await db.delete(productVariants).where(eq(productVariants.id, c.req.param('variantId')))
+  return c.json({ ok: true })
 })
 
 export default app
