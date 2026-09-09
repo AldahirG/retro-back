@@ -33,9 +33,12 @@ export const updateProduct = (id: string, data: any) =>
   req(`/api/v1/products/${id}`, { method: 'PATCH', body: JSON.stringify(data) })
 export const deleteProduct = (id: string) =>
   req(`/api/v1/products/${id}`, { method: 'DELETE' })
-export const uploadProductImage = (productId: string, file: File) => {
+export const uploadProductImage = (productId: string, file: File, alt = '', isPrimary = false, position = 0) => {
   const fd = new FormData()
-  fd.append('image', file)
+  fd.append('file', file)
+  fd.append('alt', alt)
+  fd.append('isPrimary', String(isPrimary))
+  fd.append('position', String(position))
   return fetch(`${BASE}/api/v1/products/${productId}/images`, {
     method: 'POST', credentials: 'include', body: fd,
   }).then(r => r.json())
@@ -47,6 +50,8 @@ export const deleteProductImage = (productId: string, imageId: string) =>
 export const getOrders = (params = '') => req<any>(`/api/v1/orders?limit=50${params}`)
 export const updateOrderStatus = (id: string, status: string, note?: string) =>
   req(`/api/v1/orders/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status, note }) })
+export const addShipment = (orderId: string, carrier: string, trackingNumber: string) =>
+  req(`/api/v1/orders/${orderId}/shipment`, { method: 'POST', body: JSON.stringify({ carrier, trackingNumber }) })
 
 // ── Admin: Drops ─────────────────────────────────────────────────────────────
 export const getDrops  = () => req<any[]>('/api/v1/drops')

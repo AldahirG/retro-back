@@ -278,3 +278,19 @@ export const ordersRelations = relations(orders, ({ one, many }) => ({
   shipment:       one(shipments, { fields: [orders.id], references: [shipments.orderId]   }),
   payment:        one(payments,  { fields: [orders.id], references: [payments.orderId]    }),
 }))
+
+export const shipmentsRelations = relations(shipments, ({ one }) => ({
+  order: one(orders, { fields: [shipments.orderId], references: [orders.id] }),
+}))
+
+export const paymentsRelations = relations(payments, ({ one }) => ({
+  order: one(orders, { fields: [payments.orderId], references: [orders.id] }),
+}))
+
+export const orderItemsRelations = relations(orderItems, ({ one }) => ({
+  order: one(orders, { fields: [orderItems.orderId], references: [orders.id] }),
+}))
+
+export const orderStatusHistoryRelations = relations(orderStatusHistory, ({ one }) => ({
+  order: one(orders, { fields: [orderStatusHistory.orderId], references: [orders.id] }),
+}))

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getDrops, createDrop, updateDrop, deleteDrop } from '../lib/api'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus, Trash2, Eye, EyeOff } from 'lucide-react'
 
 const inp = 'w-full border border-black/12 px-3 py-2 text-sm focus:outline-none focus:border-black'
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -54,6 +54,13 @@ export default function Drops() {
             </div>
             <div className="flex flex-col gap-2 shrink-0">
               <button onClick={() => openEdit(d)} className="text-[11px] tracking-widest uppercase font-bold text-black/40 hover:text-black transition-colors">Editar</button>
+              <button
+                onClick={() => updateDrop(d.id, { active: !d.active }).then(load)}
+                title={d.active ? 'Pasar a borrador' : 'Publicar'}
+                className={`transition-colors ${d.active ? 'text-green-500 hover:text-black/40' : 'text-black/20 hover:text-green-500'}`}
+              >
+                {d.active ? <Eye size={15} /> : <EyeOff size={15} />}
+              </button>
               <button onClick={() => { if (confirm(`¿Eliminar "${d.name}"?`)) deleteDrop(d.id).then(load) }}
                 className="text-[#c8382a]/40 hover:text-[#c8382a] transition-colors"><Trash2 size={13} /></button>
             </div>

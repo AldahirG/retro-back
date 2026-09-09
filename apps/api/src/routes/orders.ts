@@ -195,8 +195,9 @@ app.get('/track/:orderNumber', async (c) => {
     with: { items: true, shipment: true },
   })
   if (!order) return c.json({ error: 'Pedido no encontrado' }, 404)
-  // Verificar que el phone coincida (guest o user)
-  if (order.guestPhone !== phone) return c.json({ error: 'No autorizado' }, 403)
+  // Normaliza a últimos 10 dígitos para comparar (sin código de país)
+  const norm = (p: string | null | undefined) => (p ?? '').replace(/\D/g, '').slice(-10)
+  if (norm(order.guestPhone) !== norm(phone)) return c.json({ error: 'No autorizado' }, 403)
   return c.json(order)
 })
 
@@ -206,7 +207,7 @@ app.get('/me', requireAuth, async (c) => {
   const myOrders = await db.query.orders.findMany({
     where: eq(orders.userId, user.id),
     orderBy: desc(orders.createdAt),
-    with: { items: true },
+    with: { items: true, shipment: true },
   })
   return c.json(myOrders)
 })
@@ -257,7 +258,7 @@ app.patch('/:id/status', requireAdmin, async (c) => {
     for (const item of items) {
       if (item.variantId) {
         await db.update(productVariants)
-          .set({ reservedStock: db.sql`GREATEST(reserved_stock - ${item.qty}, 0)` as any })
+          .set({ reservedStock: sql`GREATEST(reserved_stock - ${item.qty}, 0)` })
           .where(eq(productVariants.id, item.variantId))
       }
     }
@@ -272,8 +273,8 @@ app.patch('/:id/status', requireAdmin, async (c) => {
       if (item.variantId) {
         await db.update(productVariants)
           .set({
-            stock:         db.sql`GREATEST(stock - ${item.qty}, 0)` as any,
-            reservedStock: db.sql`GREATEST(reserved_stock - ${item.qty}, 0)` as any,
+            stock:         sql`GREATEST(stock - ${item.qty}, 0)`,
+            reservedStock: sql`GREATEST(reserved_stock - ${item.qty}, 0)`,
           })
           .where(eq(productVariants.id, item.variantId))
       }

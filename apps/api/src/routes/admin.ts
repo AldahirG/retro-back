@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { eq, desc, count, sum, gte, and } from 'drizzle-orm'
+import { eq, desc, count, sum, gte, and, sql } from 'drizzle-orm'
 import { db } from '../db/index.ts'
 import { orders, products, productVariants, discounts, drops, categories, settings } from '../db/schema.ts'
 import { requireAdmin } from '../middleware/auth.ts'
@@ -24,7 +24,7 @@ app.get('/dashboard', async (c) => {
       .where(and(gte(orders.createdAt, month), eq(orders.status, 'delivered'))),
     db.select({ count: count() }).from(orders).where(eq(orders.status, 'pending')),
     db.select({ count: count() }).from(productVariants)
-      .where(db.sql`stock - reserved_stock <= 3` as any),
+      .where(sql`stock - reserved_stock <= 3`),
     db.select({ count: count() }).from(products).where(eq(products.visible, true)),
   ])
 
@@ -54,15 +54,19 @@ app.get('/drops', async (c) => {
 
 app.post('/drops', async (c) => {
   const body = await c.req.json()
+  if (!body.slug?.trim()) return c.json({ error: 'Slug requerido' }, 400)
+  if (!body.name?.trim()) return c.json({ error: 'Nombre requerido' }, 400)
+
   const [drop] = await db.insert(drops).values({
-    slug:        body.slug,
-    name:        body.name,
-    subtitle:    body.subtitle ?? undefined,
-    heroImageUrl: body.heroImageUrl ?? undefined,
-    accentColor: body.accentColor ?? '#e63946',
-    endDate:     body.endDate ? new Date(body.endDate) : undefined,
-    active:      body.active !== false,
-    order:       body.order ?? 0,
+    slug:         body.slug.trim(),
+    name:         body.name.trim(),
+    subtitle:     body.subtitle || undefined,
+    heroImageUrl: body.heroImageUrl || undefined,
+    accentColor:  body.accentColor || '#e63946',
+    endDate:      body.endDate   ? new Date(body.endDate)   : undefined,
+    startDate:    body.startDate ? new Date(body.startDate) : undefined,
+    active:       body.active !== false,
+    order:        body.order ?? 0,
   }).returning()
 
   return c.json(drop, 201)
@@ -70,7 +74,19 @@ app.post('/drops', async (c) => {
 
 app.patch('/drops/:id', async (c) => {
   const body = await c.req.json()
-  const [drop] = await db.update(drops).set(body).where(eq(drops.id, c.req.param('id'))).returning()
+  // Only set known columns — prevents schema-drift errors and unknown-key issues
+  const patch: Record<string, any> = {}
+  if (body.name      !== undefined) patch.name      = body.name
+  if (body.slug      !== undefined) patch.slug      = body.slug
+  if (body.subtitle  !== undefined) patch.subtitle  = body.subtitle || null
+  if (body.heroImageUrl !== undefined) patch.heroImageUrl = body.heroImageUrl || null
+  if (body.accentColor  !== undefined) patch.accentColor  = body.accentColor
+  if (body.active    !== undefined) patch.active    = body.active
+  if (body.order     !== undefined) patch.order     = body.order
+  if (body.endDate   !== undefined) patch.endDate   = body.endDate ? new Date(body.endDate) : null
+  if (body.startDate !== undefined) patch.startDate = body.startDate ? new Date(body.startDate) : null
+  const [drop] = await db.update(drops).set(patch).where(eq(drops.id, c.req.param('id'))).returning()
+  if (!drop) return c.json({ error: 'Drop no encontrado' }, 404)
   return c.json(drop)
 })
 
@@ -108,7 +124,19 @@ app.get('/discounts', async (c) => {
 
 app.post('/discounts', async (c) => {
   const body = await c.req.json()
-  const [discount] = await db.insert(discounts).values(body).returning()
+  if (!body.code?.trim()) return c.json({ error: 'Código requerido' }, 400)
+  if (!body.value && body.value !== 0) return c.json({ error: 'Valor requerido' }, 400)
+
+  const [discount] = await db.insert(discounts).values({
+    code:      body.code.trim().toUpperCase(),
+    type:      body.type,
+    value:     String(body.value),
+    minOrder:  body.minOrder ? String(body.minOrder) : undefined,
+    maxUses:   body.maxUses  ? Number(body.maxUses)  : undefined,
+    validFrom: body.validFrom ? new Date(body.validFrom) : undefined,
+    validTo:   body.validTo   ? new Date(body.validTo)   : undefined,
+    active:    body.active !== false,
+  }).returning()
   return c.json(discount, 201)
 })
 
@@ -142,7 +170,7 @@ app.put('/settings', async (c) => {
 app.get('/reports/sales', async (c) => {
   const { from, to } = c.req.query()
   const rows = await db.select({
-    date:    db.sql<string>`DATE(created_at)`,
+    date:    sql<string>`DATE(created_at)`,
     revenue: sum(orders.total),
     count:   count(),
   })
@@ -153,15 +181,15 @@ app.get('/reports/sales', async (c) => {
       eq(orders.status, 'delivered'),
     )
   )
-  .groupBy(db.sql`DATE(created_at)`)
-  .orderBy(db.sql`DATE(created_at)`)
+  .groupBy(sql`DATE(created_at)`)
+  .orderBy(sql`DATE(created_at)`)
 
   return c.json(rows)
 })
 
 app.get('/reports/inventory', async (c) => {
   const rows = await db.query.productVariants.findMany({
-    where: db.sql`stock - reserved_stock <= 5` as any,
+    where: sql`stock - reserved_stock <= 5`,
     with: { product: { with: { images: true } } },
     orderBy: productVariants.stock,
   })

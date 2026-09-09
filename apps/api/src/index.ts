@@ -60,6 +60,65 @@ app.get('/api/v1/categories', async (c) => {
 // ── RUTAS CON AUTH ────────────────────────────────────────────
 app.route('/api/v1/orders', ordersRouter)
 
+// ── PERFIL DE USUARIO ─────────────────────────────────────────
+app.get('/api/v1/profile', async (c) => {
+  const { db }            = await import('./db/index.ts')
+  const { users, addresses } = await import('./db/schema.ts')
+  const { eq }            = await import('drizzle-orm')
+  const session = await (await import('./lib/auth.ts')).auth.api.getSession({ headers: c.req.raw.headers })
+  if (!session?.user) return c.json({ error: 'No autenticado' }, 401)
+  const [user] = await db.select({ id: users.id, name: users.name, email: users.email, phone: users.phone }).from(users).where(eq(users.id, session.user.id))
+  const addrs  = await db.select().from(addresses).where(eq(addresses.userId, session.user.id))
+  return c.json({ user, addresses: addrs })
+})
+
+app.patch('/api/v1/profile', async (c) => {
+  const { db }   = await import('./db/index.ts')
+  const { users } = await import('./db/schema.ts')
+  const { eq }   = await import('drizzle-orm')
+  const session  = await (await import('./lib/auth.ts')).auth.api.getSession({ headers: c.req.raw.headers })
+  if (!session?.user) return c.json({ error: 'No autenticado' }, 401)
+  const body = await c.req.json()
+  const allowed = { name: body.name, phone: body.phone }
+  const [updated] = await db.update(users).set(allowed).where(eq(users.id, session.user.id)).returning({ id: users.id, name: users.name, email: users.email, phone: users.phone })
+  return c.json(updated)
+})
+
+app.post('/api/v1/profile/addresses', async (c) => {
+  const { db }       = await import('./db/index.ts')
+  const { addresses } = await import('./db/schema.ts')
+  const { eq }       = await import('drizzle-orm')
+  const session      = await (await import('./lib/auth.ts')).auth.api.getSession({ headers: c.req.raw.headers })
+  if (!session?.user) return c.json({ error: 'No autenticado' }, 401)
+  const body = await c.req.json()
+  // Si es default, quitar default de las demás
+  if (body.isDefault) await db.update(addresses).set({ isDefault: false }).where(eq(addresses.userId, session.user.id))
+  const [addr] = await db.insert(addresses).values({ ...body, userId: session.user.id }).returning()
+  return c.json(addr, 201)
+})
+
+app.patch('/api/v1/profile/addresses/:id', async (c) => {
+  const { db }       = await import('./db/index.ts')
+  const { addresses } = await import('./db/schema.ts')
+  const { eq, and }  = await import('drizzle-orm')
+  const session      = await (await import('./lib/auth.ts')).auth.api.getSession({ headers: c.req.raw.headers })
+  if (!session?.user) return c.json({ error: 'No autenticado' }, 401)
+  const body = await c.req.json()
+  if (body.isDefault) await db.update(addresses).set({ isDefault: false }).where(eq(addresses.userId, session.user.id))
+  const [addr] = await db.update(addresses).set(body).where(and(eq(addresses.id, c.req.param('id')), eq(addresses.userId, session.user.id))).returning()
+  return c.json(addr)
+})
+
+app.delete('/api/v1/profile/addresses/:id', async (c) => {
+  const { db }       = await import('./db/index.ts')
+  const { addresses } = await import('./db/schema.ts')
+  const { eq, and }  = await import('drizzle-orm')
+  const session      = await (await import('./lib/auth.ts')).auth.api.getSession({ headers: c.req.raw.headers })
+  if (!session?.user) return c.json({ error: 'No autenticado' }, 401)
+  await db.delete(addresses).where(and(eq(addresses.id, c.req.param('id')), eq(addresses.userId, session.user.id)))
+  return c.json({ ok: true })
+})
+
 // ── ADMIN ─────────────────────────────────────────────────────
 app.route('/api/v1/admin', adminRouter)
 
