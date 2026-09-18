@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
-import { eq, desc, count, sum, gte, and, sql } from 'drizzle-orm'
+import { eq, desc, asc, count, sum, gte, and, or, ilike, sql } from 'drizzle-orm'
 import { db } from '../db/index.ts'
-import { orders, products, productVariants, discounts, drops, categories, settings } from '../db/schema.ts'
+import { orders, products, productImages, productVariants, discounts, drops, categories, settings } from '../db/schema.ts'
 import { requireAdmin } from '../middleware/auth.ts'
 
 
@@ -164,6 +164,66 @@ app.put('/settings', async (c) => {
       .onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: new Date() } })
   }
   return c.json({ ok: true })
+})
+
+// ── PRODUCTS ADMIN ────────────────────────────────────────────
+app.get('/products', async (c) => {
+  const { search, category, page = '1', limit = '20' } = c.req.query()
+  const offset = (parseInt(page) - 1) * parseInt(limit)
+  let catId: string | undefined
+  if (category) {
+    const cat = await db.query.categories.findFirst({ where: eq(categories.slug, category) })
+    catId = cat?.id
+  }
+  const whereClause = and(
+    catId  ? eq(products.categoryId, catId) : undefined,
+    search ? or(ilike(products.name, `%${search}%`), ilike(products.slug, `%${search}%`)) : undefined,
+  )
+  const [rows, countRows] = await Promise.all([
+    db.query.products.findMany({
+      where: whereClause,
+      with: { images: { orderBy: asc(productImages.position) }, variants: true, category: true, drop: true },
+      orderBy: desc(products.createdAt),
+      limit: parseInt(limit),
+      offset,
+    }),
+    db.select({ count: count() }).from(products).where(whereClause),
+  ])
+  return c.json({ data: rows, page: parseInt(page), total: countRows[0].count })
+})
+
+app.get('/products/:id', async (c) => {
+  const row = await db.query.products.findFirst({
+    where: eq(products.id, c.req.param('id')),
+    with: { images: true, variants: true, category: true, drop: true },
+  })
+  if (!row) return c.json({ error: 'Not found' }, 404)
+  return c.json(row)
+})
+
+// ── STOCK / VARIANTS ──────────────────────────────────────────
+app.get('/variants', async (c) => {
+  const { search } = c.req.query()
+  const rows = await db.query.productVariants.findMany({
+    with: { product: true },
+    orderBy: productVariants.stock,
+  })
+  if (search) {
+    const q = search.toLowerCase()
+    return c.json(rows.filter(v => v.product?.name?.toLowerCase().includes(q) || v.size?.toLowerCase().includes(q) || v.color?.toLowerCase().includes(q)))
+  }
+  return c.json(rows)
+})
+
+app.patch('/variants/:id/stock', async (c) => {
+  const { stock } = await c.req.json()
+  if (typeof stock !== 'number' || stock < 0) return c.json({ error: 'Stock inválido' }, 400)
+  const [v] = await db.update(productVariants)
+    .set({ stock })
+    .where(eq(productVariants.id, c.req.param('id')))
+    .returning()
+  if (!v) return c.json({ error: 'Variante no encontrada' }, 404)
+  return c.json(v)
 })
 
 // ── REPORTS ───────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import productsRouter  from './routes/products.ts'
 import ordersRouter    from './routes/orders.ts'
 import adminRouter     from './routes/admin.ts'
 import discountsRouter from './routes/discounts.ts'
+import paymentsRouter  from './routes/payments.ts'
 
 const app = new Hono()
 
@@ -58,7 +59,8 @@ app.get('/api/v1/categories', async (c) => {
 })
 
 // ── RUTAS CON AUTH ────────────────────────────────────────────
-app.route('/api/v1/orders', ordersRouter)
+app.route('/api/v1/orders',   ordersRouter)
+app.route('/api/v1/payments', paymentsRouter)
 
 // ── PERFIL DE USUARIO ─────────────────────────────────────────
 app.get('/api/v1/profile', async (c) => {

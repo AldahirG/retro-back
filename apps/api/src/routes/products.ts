@@ -64,7 +64,21 @@ app.get('/', async (c) => {
     offset,
   })
 
-  return c.json({ data: rows, page: parseInt(page) })
+  // Total count (for pagination)
+  const allRows = await db.query.products.findMany({
+    where: and(
+      eq(products.visible, true),
+      categoryId ? eq(products.categoryId, categoryId) : undefined,
+      dropId     ? eq(products.dropId, dropId)         : undefined,
+      search     ? or(
+        ilike(products.name,        `%${search}%`),
+        ilike(products.description, `%${search}%`),
+        ilike(products.slug,        `%${search}%`),
+      ) : undefined,
+    ),
+    columns: { id: true },
+  })
+  return c.json({ data: rows, page: parseInt(page), total: allRows.length })
 })
 
 // GET /products/:slug

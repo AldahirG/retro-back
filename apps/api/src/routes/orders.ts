@@ -6,9 +6,10 @@ import { nanoid } from 'nanoid'
 import { db } from '../db/index.ts'
 import {
   orders, orderItems, orderStatusHistory,
-  productVariants, discounts, shipments
+  productVariants, discounts, shipments, users
 } from '../db/schema.ts'
 import { requireAdmin, requireAuth } from '../middleware/auth.ts'
+import { sendOrderConfirmation, sendOrderShipped } from '../lib/email.ts'
 
 const app = new Hono()
 
@@ -138,8 +139,12 @@ app.post('/', async (c) => {
   }
 
   // ── Calcular totales con precios reales ──
-  const subtotal = resolvedItems.reduce((s, i) => s + i.realPrice * i.qty, 0)
-  const total    = Math.max(0, subtotal - discountAmount)
+  const FREE_SHIPPING_AT = 1299
+  const SHIPPING_COST    = 150
+  const subtotal     = resolvedItems.reduce((s, i) => s + i.realPrice * i.qty, 0)
+  const discounted   = Math.max(0, subtotal - discountAmount)
+  const shippingCost = discounted >= FREE_SHIPPING_AT ? 0 : SHIPPING_COST
+  const total        = discounted + shippingCost
 
   // ── Obtener user_id si viene autenticado ──
   let userId: string | undefined
@@ -159,7 +164,7 @@ app.post('/', async (c) => {
     guestEmail:          body.guestEmail,
     subtotal:            subtotal.toFixed(2),
     discountAmount:      discountAmount.toFixed(2),
-    shippingCost:        '0.00',
+    shippingCost:        shippingCost.toFixed(2),
     total:               total.toFixed(2),
     discountId:          discountRow?.id,
     shippingAddressJson: body.shippingAddress,
@@ -183,6 +188,34 @@ app.post('/', async (c) => {
   await db.insert(orderStatusHistory).values({
     orderId: order.id, status: 'pending', note: 'Pedido creado',
   })
+
+  // Email de confirmación (fire-and-forget, no bloquea respuesta)
+  let emailTo: string | null = body.guestEmail ?? null
+  let emailName: string | null = body.guestName ?? null
+  if (!emailTo && userId) {
+    const u = await db.query.users.findFirst({ where: eq(users.id, userId) }).catch(() => null)
+    emailTo   = u?.email  ?? null
+    emailName = u?.name   ?? null
+  }
+
+  if (emailTo) {
+    sendOrderConfirmation({
+      to:          emailTo,
+      orderNumber,
+      items:       resolvedItems.map(i => ({
+        productName: i.productName,
+        size:        i.size,
+        color:       i.color,
+        qty:         i.qty,
+        unitPrice:   i.unitPrice,
+      })),
+      subtotal:    subtotal.toFixed(2),
+      discount:    discountAmount.toFixed(2),
+      shipping:    shippingCost.toFixed(2),
+      total:       total.toFixed(2),
+      name:        emailName,
+    }).catch(err => console.error('[email] confirmation failed:', err))
+  }
 
   return c.json({ order, orderNumber }, 201)
 })
@@ -261,6 +294,27 @@ app.patch('/:id/status', requireAdmin, async (c) => {
           .set({ reservedStock: sql`GREATEST(reserved_stock - ${item.qty}, 0)` })
           .where(eq(productVariants.id, item.variantId))
       }
+    }
+  }
+
+  // Email "en camino" cuando se marca como enviado
+  if (status === 'shipped') {
+    const fullOrder = await db.query.orders.findFirst({
+      where: eq(orders.id, c.req.param('id')),
+      with: { shipment: true },
+    })
+    const shipment = (fullOrder as any)?.shipment
+    const to = fullOrder?.guestEmail ?? (fullOrder?.userId
+      ? await db.query.users.findFirst({ where: eq(users.id, fullOrder.userId) }).then(u => u?.email ?? null).catch(() => null)
+      : null)
+    if (to) {
+      sendOrderShipped({
+        to,
+        orderNumber: fullOrder!.orderNumber,
+        carrier:     shipment?.carrier    ?? null,
+        trackingNum: shipment?.trackingNumber ?? null,
+        name:        fullOrder?.guestName ?? null,
+      }).catch(err => console.error('[email] shipped failed:', err))
     }
   }
 
